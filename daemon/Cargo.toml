@@ -1,6 +1,6 @@
 [package]
 name = "nutbar"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "cashud: Cashu wallet daemon + mockgate TollGate simulator for the Omarchy plugin spike"
 [workspace]
