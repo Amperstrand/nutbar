@@ -99,7 +99,7 @@ systemctl --user restart omarchy-cashud
 | `CASHUD_MINT` | `https://testnut.cashu.space` | Mint URL. **Set your own** for anything real. |
 | `CASHUD_LISTEN` | `127.0.0.1:3939` | Daemon HTTP bind. Loopback only by default. |
 | `CASHUD_WIFI` | `0` | `1` enables the nmcli watcher: detects TollGate APs, manages fallback. |
-| `CASHUD_AUTOPAY` | `0` | `1` enables renewal auto-pay for sessions you already paid once. |
+| `CASHUD_AUTOPAY` | `0` | `1` enables TollGate auto-pay: first connect on a TollGate AP and renewals are paid automatically (cost-capped by `CASHUD_MAX_PAYMENT_SATS`, bounded by `CASHUD_MAX_BLIND_PAYMENTS`). |
 | `CASHUD_STASH_TARGET` | `20` | Sats kept as pre-split offline tokens, for paying captive TollGates before the mint is reachable. |
 | `CASHUD_MAX_PAYMENT_SATS` | `20` | Hard per-payment ceiling — a safety brake on gateway costs. |
 | `CASHUD_MAX_BLIND_PAYMENTS` | `3` | Max blind (offline) TollGate payments before requiring mint contact. |
@@ -116,9 +116,11 @@ systemctl --user restart omarchy-cashud
 - **Send** — export sats as a Cashu token string (or QR). Remember:
   the token spends like cash.
 - **Receive** — paste or scan a token to redeem it to your wallet.
-- **TollGate wifi** — join a TollGate AP, open the panel, and pay the
-  session with one click; with `CASHUD_AUTOPAY=1` renewals then happen
-  automatically while you stay connected.
+- **TollGate wifi** — join a TollGate AP and pay the session with one
+  click from the panel; with `CASHUD_AUTOPAY=1` the daemon pays
+  first-connect and renewals automatically while you stay connected
+  (opt-in; every payment is cost-capped and visible as
+  `gateway_spent_sats` in `/status`).
 
 ### Daemon HTTP API
 

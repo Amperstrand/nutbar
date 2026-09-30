@@ -95,6 +95,14 @@ struct AppState {
     /// the 5s resume probe to at most one payment attempt per 30s; the
     /// panel marker stays either way.
     expired_pay_attempt: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+    /// Same pacing for first-connect autopay: at most one attempt per 30s
+    /// while sitting on an unpaid TollGate AP.
+    first_pay_attempt: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+    /// Cumulative sats paid per gateway this daemon run — spend
+    /// attribution so a balance delta is readable against steps bought
+    /// (the "16 sats for cost_sats=1" field question was 16 one-sat
+    /// steps, not fees; a fee-0 mint charges nothing per swap).
+    gateway_spent: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 fn data_dir() -> PathBuf {
@@ -464,6 +472,44 @@ fn selection_failure_is_denomination_mismatch(
     matches!(error, cdk::error::Error::InsufficientFunds) && balance_sats >= cost_sats
 }
 
+/// Prepare an exact online send, healing the selection pool when the
+/// wallet's visible balance cannot cover a tiny amount. Incomplete sagas
+/// reserve proofs and stale local states shrink the pool that
+/// `total_balance()` still counts — the field signature is "8444-sat
+/// balance, 1-sat send, InsufficientFunds" (laptop evidence 2026-09-30).
+/// One idempotent recovery pass (network-bounded), then a single retry.
+async fn prepare_send_with_recovery(
+    wallet: &Wallet,
+    amount: u64,
+) -> Result<cdk::wallet::PreparedSend<'_>, cdk::error::Error> {
+    let opts = cdk::wallet::SendOptions {
+        include_fee: true,
+        ..Default::default()
+    };
+    match wallet
+        .prepare_send(cdk::Amount::from(amount), opts.clone())
+        .await
+    {
+        Err(cdk::error::Error::InsufficientFunds) => {
+            let reserved: u64 = wallet
+                .total_reserved_balance()
+                .await
+                .map(u64::from)
+                .unwrap_or_default();
+            tracing::warn!(
+                amount,
+                reserved,
+                "selection pool could not cover the send; recovering incomplete sagas and retrying once"
+            );
+            if let Err(e) = wallet.recover_incomplete_sagas().await {
+                tracing::warn!(error = %e, "saga recovery pass failed during prepare retry");
+            }
+            wallet.prepare_send(cdk::Amount::from(amount), opts).await
+        }
+        other => other,
+    }
+}
+
 /// Honest copy for a failed payment prepare: name the mechanism (a mint
 /// swap is needed for exact change; the mint may be unreachable behind
 /// the captive gate) instead of the lying "Insufficient funds". No money
@@ -474,12 +520,24 @@ async fn honest_prepare_failure(
     wallet: &Wallet,
 ) -> anyhow::Error {
     let balance: u64 = wallet.total_balance().await.unwrap_or_default().into();
+    let reserved: u64 = wallet
+        .total_reserved_balance()
+        .await
+        .map(u64::from)
+        .unwrap_or_default();
     if selection_failure_is_denomination_mismatch(&error, balance, cost_sats) {
+        let reserved_note = if reserved > 0 {
+            format!(" ({reserved} sat of that is reserved by incomplete operations — recovery will release it)")
+        } else {
+            String::new()
+        };
         anyhow::anyhow!(
-            "cannot make exact {cost_sats}-sat change from the wallet's current denominations — a mint swap is needed and the mint may be unreachable behind the captive gate; no money moved, balance is {balance} sat; the offline stash covers this when primed"
+            "cannot make exact {cost_sats}-sat change from the wallet's current denominations — a mint swap is needed and the mint may be unreachable behind the captive gate; no money moved, balance is {balance} sat{reserved_note}; the offline stash covers this when primed"
         )
     } else {
-        anyhow::Error::new(error).context("prepare_send failed (insufficient funds?)")
+        anyhow::Error::new(error).context(format!(
+            "prepare_send failed (insufficient funds?) — balance {balance} sat, {reserved} sat reserved by incomplete operations"
+        ))
     }
 }
 
@@ -525,20 +583,12 @@ async fn pay_auto(st: &AppState, gateway: &str, steps: Option<u64>) -> Result<Ac
         let (token, reused) = st.stash.checkout().map_err(|e| anyhow::anyhow!("{e}"))?;
         (token, if reused { "pending" } else { "offline stash" })
     } else {
-        // include_fee: the gateway redeems this token at the mint, and a
-        // fee-bearing mint shaves its input fee off the redeemed value —
-        // a cost-exact token under-pays and buys no step. cdk sizes the
-        // outputs to cost + the redemption fee (no-op at fee 0).
-        let prepared = match wallet
-            .prepare_send(
-                cdk::Amount::from(cost),
-                cdk::wallet::SendOptions {
-                    include_fee: true,
-                    ..Default::default()
-                },
-            )
-            .await
-        {
+        // include_fee (inside prepare_send_with_recovery): the gateway
+        // redeems this token at the mint, and a fee-bearing mint shaves
+        // its input fee off the redeemed value — a cost-exact token
+        // under-pays and buys no step. cdk sizes the outputs to cost +
+        // the redemption fee (no-op at fee 0).
+        let prepared = match prepare_send_with_recovery(&wallet, cost).await {
             Ok(prepared) => prepared,
             Err(e) => return Err(honest_prepare_failure(e, cost, &wallet).await),
         };
@@ -633,6 +683,7 @@ async fn settle_payment_outcome(
                 .complete(token)
                 .map_err(|e| anyhow::anyhow!("payment accepted but journal cleanup failed: {e}"))?;
             st.blind_payments.fetch_add(1, Ordering::Relaxed);
+            *st.gateway_spent.lock().await.entry(gateway.to_string()).or_insert(0) += cost;
             session.credit_baseline = credit_baseline;
             let expected_total = credit_baseline
                 .unwrap_or_default()
@@ -654,6 +705,7 @@ async fn settle_payment_outcome(
             st.stash
                 .complete(token)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
+            *st.gateway_spent.lock().await.entry(gateway.to_string()).or_insert(0) += cost;
             if let Some(usage) = fetch_usage(gateway).await? {
                 st.autopay_halted.store(false, Ordering::Relaxed);
                 return Ok(ActiveSession::from_usage(gateway, &ad.metric, cost, usage));
@@ -834,19 +886,13 @@ async fn prime_stash(st: &AppState, n: usize) -> Result<()> {
     for _ in 0..n {
         {
             let _payment_guard = st.payment_lock.lock().await;
-            let prepared = match wallet
-                .prepare_send(
-                    cdk::Amount::from(STASH_TOKEN_SATS),
-                    cdk::wallet::SendOptions {
-                        include_fee: true,
-                        ..Default::default()
-                    },
-                )
-                .await
-            {
-                Ok(prepared) => prepared,
-                Err(e) => return Err(honest_prepare_failure(e, STASH_TOKEN_SATS, &wallet).await),
-            };
+            let prepared =
+                match prepare_send_with_recovery(&wallet, STASH_TOKEN_SATS).await {
+                    Ok(prepared) => prepared,
+                    Err(e) => {
+                        return Err(honest_prepare_failure(e, STASH_TOKEN_SATS, &wallet).await)
+                    }
+                };
             let token = prepared.confirm(None).await.context("confirm failed")?;
             st.stash
                 .put(&token.to_string())
@@ -894,6 +940,27 @@ enum ExpiryAction {
 /// renewal-sized payment (documented residual risk).
 fn expired_gateway_autopays(autopay: bool, stash_tokens: usize, balance_sats: u64) -> bool {
     autopay && (stash_tokens > 0 || balance_sats > 0)
+}
+
+/// First-connect autopay (laptop-lane request 2026-09-30, estate-lead
+/// approval): sitting on a TollGate AP with no session and no payment
+/// history at that gateway, pay automatically when autopay is opted in
+/// (default off) and funds exist. Only fires while the gateway is the
+/// live default route of an active TollGate AP — never for a remembered
+/// `last_gateway` marker, which would pay for wifi we are not using.
+/// Safety envelope: CASHUD_AUTOPAY=1 opt-in, pay_auto's cost cap and
+/// blind-payment cap bound a cloned-SSID attacker.
+fn first_connect_autopays(
+    on_tollgate_ap: bool,
+    autopay: bool,
+    autopay_halted: bool,
+    stash_tokens: usize,
+    balance_sats: u64,
+) -> bool {
+    on_tollgate_ap
+        && autopay
+        && !autopay_halted
+        && (stash_tokens > 0 || balance_sats > 0)
 }
 
 /// Single session supervisor. `/usage` is authoritative for both time and byte
@@ -1056,7 +1123,7 @@ async fn session_supervisor(st: AppState) {
 /// current TollGate AP's default-route gateway, or the last gateway a
 /// session was held with (survives daemon restarts on the same network).
 async fn maybe_resume_session(st: &AppState) {
-    let gateway = if st.wifi.enabled
+    let ap_gateway = if st.wifi.enabled
         && wifi::active_ssid()
             .ok()
             .flatten()
@@ -1067,13 +1134,16 @@ async fn maybe_resume_session(st: &AppState) {
     } else {
         None
     };
-    let gateway = gateway.or_else(|| {
+    let gateway = ap_gateway.clone().or_else(|| {
         std::fs::read_to_string(data_dir().join("last_gateway"))
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     });
     let Some(gateway) = gateway else { return };
+    // First-connect autopay must only fire for the AP we are actually
+    // sitting on — a file-marker gateway is history, not connectivity.
+    let on_tollgate_ap = ap_gateway.is_some_and(|g| g == gateway);
 
     match fetch_usage(&gateway).await {
         Ok(Some(usage)) => {
@@ -1149,6 +1219,52 @@ async fn maybe_resume_session(st: &AppState) {
                 if marker.exists() {
                     let _ = std::fs::remove_file(&marker);
                 }
+                // First-connect autopay: no session and no history at this
+                // gateway, but we are sitting on its AP with autopay opted
+                // in and funds available — pay instead of falling back.
+                // The 30s throttle keeps a broken gateway from being
+                // hammered by the 5s resume probe; pay_auto's ad
+                // validation, cost cap and blind cap bound the exposure.
+                if on_tollgate_ap {
+                    let balance: u64 = match st.wallet_for(None).await {
+                        Ok(wallet) => wallet.total_balance().await.unwrap_or_default().into(),
+                        Err(_) => 0,
+                    };
+                    let attempt_due = {
+                        let mut last = st.first_pay_attempt.lock().unwrap();
+                        let due = last
+                            .is_none_or(|at| at.elapsed() >= Duration::from_secs(30));
+                        if due {
+                            *last = Some(std::time::Instant::now());
+                        }
+                        due
+                    };
+                    if attempt_due
+                        && first_connect_autopays(
+                            on_tollgate_ap,
+                            st.autopay,
+                            st.autopay_halted.load(Ordering::Relaxed),
+                            st.stash.count(),
+                            balance,
+                        )
+                    {
+                        tracing::info!(%gateway, "first-connect autopay: on TollGate AP, no session, funds available");
+                        match pay_auto(st, &gateway, None).await {
+                            Ok(session) => {
+                                *st.session.lock().await = Some(session);
+                                let _ = std::fs::write(data_dir().join("last_gateway"), &gateway);
+                                tracing::info!(%gateway, "first-connect session paid");
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    %gateway,
+                                    error = %e,
+                                    "first-connect autopay attempt failed (will retry in 30s or pay from the panel)"
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1210,6 +1326,16 @@ async fn status(State(st): State<AppState>) -> Json<Value> {
     } else {
         None
     };
+    let gateway_spent = {
+        let gateway = session
+            .as_ref()
+            .map(|s| s.gateway.clone())
+            .or_else(|| expired_gateway.clone());
+        match gateway {
+            Some(g) => st.gateway_spent.lock().await.get(&g).copied().unwrap_or(0),
+            None => 0,
+        }
+    };
     Json(json!({
         "ok": true,
         "daemon": "cashud",
@@ -1225,6 +1351,7 @@ async fn status(State(st): State<AppState>) -> Json<Value> {
         "autopay_halted": st.autopay_halted.load(Ordering::Relaxed),
         "payment_phase": payment_phase,
         "renewals": st.renewals.load(Ordering::Relaxed),
+        "gateway_spent_sats": gateway_spent,
         "blind_payments": st.blind_payments.load(Ordering::Relaxed),
         "open_sagas": st.open_sagas.load(Ordering::Relaxed),
         "wifi": {
@@ -2145,6 +2272,8 @@ async fn main() -> Result<()> {
         quote_mints: Arc::new(Mutex::new(HashMap::new())),
         open_sagas: Arc::new(AtomicU64::new(0)),
         expired_pay_attempt: Arc::new(std::sync::Mutex::new(None)),
+        first_pay_attempt: Arc::new(std::sync::Mutex::new(None)),
+        gateway_spent: Arc::new(Mutex::new(HashMap::new())),
     };
 
     {
@@ -2369,6 +2498,26 @@ mod expiry_tests {
         // attempt — the panel affordance is the only path.
         assert!(!expired_gateway_autopays(false, 5, 42));
         assert!(!expired_gateway_autopays(true, 0, 0));
+    }
+
+    #[test]
+    fn first_connect_autopays_when_on_ap_funded_and_opted_in() {
+        // Sitting on a TollGate AP with funds and autopay opted in: pay
+        // without a click (laptop-lane request 2026-09-30). Stash tokens
+        // or wallet balance both qualify.
+        assert!(first_connect_autopays(true, true, false, 5, 0));
+        assert!(first_connect_autopays(true, true, false, 0, 42));
+    }
+
+    #[test]
+    fn first_connect_autopay_requires_live_ap_and_opt_in_and_health() {
+        // Never fire for a remembered gateway while off its AP (that
+        // would pay for wifi we are not using), without the explicit
+        // CASHUD_AUTOPAY=1 opt-in, when halted, or with no funds.
+        assert!(!first_connect_autopays(false, true, false, 5, 42));
+        assert!(!first_connect_autopays(true, false, false, 5, 42));
+        assert!(!first_connect_autopays(true, true, true, 5, 42));
+        assert!(!first_connect_autopays(true, true, false, 0, 0));
     }
 
     #[test]
