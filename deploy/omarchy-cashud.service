@@ -1,0 +1,20 @@
+[Unit]
+Description=Cashu wallet daemon for the NutBar plugin
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/cashud
+Restart=on-failure
+RestartSec=3
+UMask=0077
+# CASHUD_MINT: set yours in ~/.config/omarchy-cashu/env (default: public test mint)
+Environment=CASHUD_LISTEN=127.0.0.1:3939
+Environment=CASHUD_WIFI=1
+Environment=CASHUD_STASH_TARGET=20
+Environment=CASHUD_MAX_PAYMENT_SATS=20
+# Optional operator overrides, e.g. CASHUD_AUTOPAY=1 for a field test.
+EnvironmentFile=-%h/.config/omarchy-cashu/env
+
+[Install]
+WantedBy=default.target
