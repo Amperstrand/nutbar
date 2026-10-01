@@ -145,6 +145,9 @@ on Android 14+ and the CDC-NCM requirement): see
 
 ## Companion hardware clients
 
+![Phone payment](docs/phone-demo.png)
+*Android phone paying a TollGate session via the captive portal (TIP-03 token).*
+
 [`esp32/atom-detector/`](esp32/atom-detector/) — an M5 Atom (ESP32)
 TollGate detector probe: auto-scans for TollGate APs, validates the
 kind-10021 ad, reports health via RGB LED + a line-based serial
