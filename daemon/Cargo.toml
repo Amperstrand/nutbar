@@ -1,0 +1,32 @@
+[package]
+name = "nutbar"
+version = "0.1.1"
+edition = "2021"
+description = "cashud: Cashu wallet daemon + mockgate TollGate simulator for the Omarchy plugin spike"
+[workspace]
+members = ["mockgate-lite"]
+[dependencies]
+cdk = { version = "0.18.1", default-features = false, features = ["wallet"] }
+cdk-sqlite = { version = "0.18.1", default-features = false, features = ["wallet"] }
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+bip39 = "2.2.2"
+ur = "0.5"
+lightning-invoice = { version = "0.34", default-features = false, features = ["std"] }
+anyhow = "1"
+rand = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+
+[[bin]]
+name = "cashud"
+path = "src/main.rs"
+
+[[bin]]
+name = "mockgate"
+path = "src/bin/mockgate.rs"

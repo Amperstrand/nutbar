@@ -1,0 +1,6 @@
+/target
+daemon/target
+**/*.rs.bk
+*.log
+.DS_Store
+node_modules/

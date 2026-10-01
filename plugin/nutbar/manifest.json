@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "nutbar",
+  "name": "NutBar",
+  "version": "0.1.0",
+  "author": "Amperstrand",
+  "license": "MIT",
+  "description": "Cashu ecash wallet for Omarchy: balance in the bar, mint/send/receive tokens, and TollGate session payments via the local cashud daemon.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "NutBar",
+    "description": "Cashu wallet balance with a full wallet panel (mint, send, receive, TollGate).",
+    "category": "Finance",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 10
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 5,
+        "max": 3600,
+        "step": 5,
+        "defaultValue": 10
+      }
+    ]
+  }
+}
