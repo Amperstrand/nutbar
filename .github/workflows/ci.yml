@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  daemon-tests:
+    name: Daemon (Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run tests
+        working-directory: daemon
+        run: cargo test --all-features
+
+  daemon-clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Run clippy
+        working-directory: daemon
+        run: cargo clippy -- -D warnings
+
+  daemon-build:
+    name: Build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build daemon
+        working-directory: daemon
+        run: cargo build --release --target ${{ matrix.target }}
+
+  plugin-validate:
+    name: Plugin QML syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check manifest
+        run: |
+          python3 -c "
+          import json
+          m = json.load(open('plugin/nutbar/manifest.json'))
+          assert m['id'] == 'nutbar'
+          assert m['kinds'] == ['bar-widget']
+          assert 'BarWidget.qml' in m['entryPoints']['barWidget']
+          print(f'✓ manifest OK (id={m[\"id\"]}, version={m[\"version\"]})')
+          "
+      - name: Check QML files exist
+        run: |
+          for f in BarWidget.qml Panel.qml Model.js; do
+            [ -f "plugin/nutbar/$f" ] || { echo "✗ missing: $f"; exit 1; }
+            echo "✓ $f"
+          done
+
+  ad-parser-test:
+    name: Advertisement parser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ad validation tests
+        run: |
+          python3 tests/ad_validate.py tests/fixtures/ad-valid.json || exit 1
+          echo "✓ valid ad accepted"
+          python3 tests/ad_validate.py tests/fixtures/ad-min-steps-zero.json && exit 1 || echo "✓ min_steps=0 rejected"
+          echo "✓ all parser tests passed"

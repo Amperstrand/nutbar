@@ -1,0 +1,10 @@
+{
+  "kind": 10021,
+  "pubkey": "742a450233de6ae1749dbd1a6416d674b2019c16cc900591de16a4aa6099265d",
+  "tags": [
+    ["metric", "bytes"],
+    ["step_size", "104857600"],
+    ["price_per_step", "cashu", "1", "sat", "https://testnut.cashu.space", "1"],
+    ["price_per_step", "cashu", "1", "sat", "https://cdk-a056e0f.cashu.exchange", "1"]
+  ]
+}
