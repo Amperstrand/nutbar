@@ -2,8 +2,6 @@
 
 **A Cashu wallet in your Omarchy status bar — with TollGate auto-pay.**
 
-![NutBar demo](docs/demo.gif)
-
 NutBar is an [Omarchy](https://omarchy.org) shell plugin plus a local daemon
 (`cashud`) that gives your desktop a Chaumian ecash balance widget: top up,
 send and receive Cashu tokens (with QR codes), and pay
@@ -144,9 +142,6 @@ on Android 14+ and the CDC-NCM requirement): see
 [`docs/upstream-options.md`](docs/upstream-options.md).
 
 ## Companion hardware clients
-
-![Phone payment](docs/phone-demo.png)
-*Android phone paying a TollGate session via the captive portal (TIP-03 token).*
 
 [`esp32/atom-detector/`](esp32/atom-detector/) — an M5 Atom (ESP32)
 TollGate detector probe: auto-scans for TollGate APs, validates the
