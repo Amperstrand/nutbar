@@ -1,6 +1,6 @@
 [package]
 name = "nutbar"
-version = "0.1.1"
+version = "0.1.0"
 edition = "2021"
 description = "cashud: Cashu wallet daemon + mockgate TollGate simulator for the Omarchy plugin spike"
 [workspace]
@@ -10,7 +10,7 @@ cdk = { version = "0.18.1", default-features = false, features = ["wallet"] }
 cdk-sqlite = { version = "0.18.1", default-features = false, features = ["wallet"] }
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["full"] }
-axum = "0.7"
+axum = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

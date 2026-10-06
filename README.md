@@ -25,6 +25,17 @@ token serialization, TollGate payments) happens inside the daemon, on
 your machine. Keys and proofs live in `~/.local/share/omarchy-cashu/`
 (NUT-02 keysets, NUT-09 restore).
 
+## Try it yourself
+
+### You need
+- Any OpenWrt router (tested: GL.iNet MT3000, ~$60)
+- An Omarchy laptop (or any Linux with Quickshell)
+
+### Setup (5 minutes)
+1. Flash the router with [TollGate](https://github.com/OpenTollGate/tollgate-installer)
+2. Install NutBar: `omarchy plugin clone Amperstrand/nutbar`
+3. Join the TollGate WiFi. Pay. Done.
+
 ## How money works here (read this first)
 
 Ecash **works like cash: whoever holds the token holds the money.**
@@ -95,7 +106,7 @@ systemctl --user restart omarchy-cashud
 | Variable | Default | What it does |
 |---|---|---|
 | `CASHUD_MINT` | `https://testnut.cashu.space` | Mint URL. **Set your own** for anything real. |
-| `CASHUD_LISTEN` | `127.0.0.1:3939` | Daemon HTTP bind. Loopback only by default. |
+| `CASHUD_LISTEN` | `127.0.0.1:3939` | Daemon bind: TCP `ip:port`, or a unix socket via `unix:///path` / bare `/abs/path` (0600 — for frontends that reject network listeners). |
 | `CASHUD_WIFI` | `0` | `1` enables the nmcli watcher: detects TollGate APs, manages fallback. |
 | `CASHUD_AUTOPAY` | `0` | `1` enables TollGate auto-pay: first connect on a TollGate AP and renewals are paid automatically (cost-capped by `CASHUD_MAX_PAYMENT_SATS`, bounded by `CASHUD_MAX_BLIND_PAYMENTS`). |
 | `CASHUD_STASH_TARGET` | `20` | Sats kept as pre-split offline tokens, for paying captive TollGates before the mint is reachable. |

@@ -1430,10 +1430,10 @@ async fn mint_inner(st: &AppState, body: &Value) -> Result<Json<Value>, Value> {
         .await
         .map_err(|e| mint_error_response("creating a mint quote", &st.default_mint, e))?;
 
-    // Fast test mints settle /mint quotes within seconds; a real
-    // signet/mainnet mint settles for real — fund such wallets via the
-    // /invoice lifecycle instead; /mint here will time out after 30s
-    // unpaid.
+    // FakeWallet mints (the local omarchy-cashu-fakewallet service, rig
+    // fakewallets) auto-pay quotes within seconds. The default zoo signet
+    // mint settles for real — fund those wallets via the /invoice
+    // lifecycle instead; /mint here will time out after 30s unpaid.
     let mut paid = false;
     for _ in 0..30 {
         let s = wallet
@@ -2372,11 +2372,76 @@ async fn main() -> Result<()> {
         .route("/wifi/fallback", post(wifi_fallback))
         .with_state(state.clone());
 
-    let addr: SocketAddr = listen.parse().context("bad CASHUD_LISTEN")?;
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("cashud listening on http://{}", listener.local_addr()?);
-    axum::serve(listener, app).await?;
+    let addr = parse_listen_spec(&listen)?;
+    match addr {
+        ListenSpec::Tcp(addr) => {
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            tracing::info!("cashud listening on http://{}", listener.local_addr()?);
+            axum::serve(listener, app).await?;
+        }
+        ListenSpec::Unix(path) => {
+            // The bridge for frontend-process wallets that reject network
+            // listeners on principle (e.g. Chaumarchy's architecture):
+            // a filesystem-permissioned socket (0600, user runtime dir)
+            // carries the same API with no network stack involved.
+            if path.exists() {
+                #[cfg(unix)]
+                use std::os::unix::fs::FileTypeExt as _;
+                let meta = std::fs::symlink_metadata(&path)?;
+                if meta.file_type().is_socket() {
+                    std::fs::remove_file(&path)
+                        .with_context(|| format!("removing stale socket {}", path.display()))?;
+                } else {
+                    bail!(
+                        "CASHUD_LISTEN path {} exists and is not a socket — refusing to remove it",
+                        path.display()
+                    );
+                }
+            }
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("creating socket parent dir {}", parent.display()))?;
+            }
+            let listener = tokio::net::UnixListener::bind(&path)
+                .with_context(|| format!("binding unix socket {}", path.display()))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+            }
+            tracing::info!(
+                "cashud listening on unix socket {} (0600)",
+                path.display()
+            );
+            axum::serve(listener, app).await?;
+        }
+    }
     Ok(())
+}
+
+/// Where CASHUD_LISTEN points: a TCP address or a unix socket path
+/// (`unix:///path/to.sock` or a bare absolute path).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ListenSpec {
+    Tcp(SocketAddr),
+    Unix(PathBuf),
+}
+
+fn parse_listen_spec(spec: &str) -> Result<ListenSpec> {
+    let spec = spec.trim();
+    if let Some(path) = spec.strip_prefix("unix://") {
+        if path.is_empty() {
+            bail!("CASHUD_LISTEN unix:// needs a path");
+        }
+        return Ok(ListenSpec::Unix(PathBuf::from(path)));
+    }
+    if spec.starts_with('/') {
+        return Ok(ListenSpec::Unix(PathBuf::from(spec)));
+    }
+    let addr: SocketAddr = spec
+        .parse()
+        .with_context(|| format!("bad CASHUD_LISTEN {spec:?} — use ip:port, unix:///path, or /abs/path"))?;
+    Ok(ListenSpec::Tcp(addr))
 }
 
 #[cfg(test)]
@@ -2753,5 +2818,45 @@ mod mint_error_tests {
         let body = mint_error_response("creating the invoice", "https://mint.example", anyhow::anyhow!("local failure"));
         assert!(body.get("mint_failure_kind").is_none());
         assert!(body.get("http_status").is_none());
+    }
+}
+
+#[cfg(test)]
+mod listen_spec_tests {
+    use super::*;
+
+    #[test]
+    fn tcp_address_parses() {
+        assert_eq!(
+            parse_listen_spec("127.0.0.1:3939").unwrap(),
+            ListenSpec::Tcp("127.0.0.1:3939".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn unix_scheme_parses() {
+        assert_eq!(
+            parse_listen_spec("unix:///run/user/1000/cashud.sock").unwrap(),
+            ListenSpec::Unix("/run/user/1000/cashud.sock".into())
+        );
+    }
+
+    #[test]
+    fn bare_absolute_path_parses_as_unix() {
+        assert_eq!(
+            parse_listen_spec("/tmp/cashud.sock").unwrap(),
+            ListenSpec::Unix("/tmp/cashud.sock".into())
+        );
+    }
+
+    #[test]
+    fn empty_unix_path_is_rejected() {
+        assert!(parse_listen_spec("unix://").is_err());
+    }
+
+    #[test]
+    fn garbage_is_rejected() {
+        assert!(parse_listen_spec("not an address").is_err());
+        assert!(parse_listen_spec("tcp://weird").is_err());
     }
 }
